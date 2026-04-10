@@ -284,6 +284,14 @@ byte sys_main_c::GlfwKeyToKey(int key, int scancode) {
 		{GLFW_KEY_RIGHT_SHIFT, KEY_SHIFT},
 		{GLFW_KEY_LEFT_CONTROL, KEY_CTRL},
 		{GLFW_KEY_RIGHT_CONTROL, KEY_CTRL},
+#ifdef __APPLE__
+		// macOS users expect Cmd (not Ctrl) as the "command modifier" for
+		// copy/paste/cut/select-all/etc. Route the Cmd keys through the same
+		// KEY_CTRL path so PoB's existing IsKeyDown("CTRL") shortcuts work
+		// without any Lua changes.
+		{GLFW_KEY_LEFT_SUPER, KEY_CTRL},
+		{GLFW_KEY_RIGHT_SUPER, KEY_CTRL},
+#endif
 		{GLFW_KEY_LEFT_ALT, KEY_ALT},
 		{GLFW_KEY_RIGHT_ALT, KEY_ALT},
 		{GLFW_KEY_PAUSE, KEY_PAUSE},
