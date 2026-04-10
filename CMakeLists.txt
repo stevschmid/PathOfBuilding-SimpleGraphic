@@ -331,6 +331,18 @@ endif ()
 set(LCURL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/Lua-cURLv3)
 file(GLOB LCURL_SOURCES ${LCURL_SOURCE_DIR}/src/**.c)
 add_library(lcurl SHARED ${LCURL_SOURCES})
+
+# LuaJIT 2.1 already exports luaL_setfuncs via its 5.2 compat layer, but
+# Lua-cURLv3's l52util.c also defines it as a polyfill (because it sees
+# LUA_VERSION_NUM == 501 and assumes Lua 5.1 needs the symbol). The two
+# definitions collide at link time on Linux/macOS. Rename the local copy via
+# a per-source preprocessor define so only LuaJIT's symbol is exported. (PR
+# #98 used `-Wl,--allow-multiple-definition` for this on Linux only; ld64
+# doesn't accept that flag, and the rename works on both platforms.)
+if (NOT WIN32)
+    set_source_files_properties(${LCURL_SOURCE_DIR}/src/l52util.c PROPERTIES
+        COMPILE_DEFINITIONS "luaL_setfuncs=lcurl_unused_luaL_setfuncs")
+endif()
 if (NOT WIN32)
     set_target_properties(lcurl PROPERTIES PREFIX "")
 endif()
@@ -467,7 +479,14 @@ endif()
 # macOS launcher: built as a .app bundle with the PoB Lua tree embedded
 # in Contents/Resources so it can be launched from Finder/Spotlight/Dock.
 if (APPLE)
-    add_executable(PathOfBuilding MACOSX_BUNDLE macos/launcher.c)
+    set(POB_APPICON "${CMAKE_CURRENT_SOURCE_DIR}/macos/AppIcon.icns")
+    set_source_files_properties(${POB_APPICON} PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources")
+
+    add_executable(PathOfBuilding MACOSX_BUNDLE
+        macos/launcher.c
+        ${POB_APPICON}
+    )
     target_link_libraries(PathOfBuilding PRIVATE ${CMAKE_DL_LIBS})
 
     set_target_properties(PathOfBuilding PROPERTIES
