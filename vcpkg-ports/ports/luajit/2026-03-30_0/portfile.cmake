@@ -2,15 +2,17 @@ set(extra_patches "")
 if (VCPKG_TARGET_IS_OSX)
 	list(APPEND extra_patches 005-do-not-pass-ld-e-macosx.patch)
 endif()
+if (VCPKG_TARGET_IS_WINDOWS)
+	list(APPEND extra_patches msvcbuild.patch)
+endif()
 
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO LuaJIT/LuaJIT
-    REF 871db2c84ecefd70a850e03a6c340214a81739f0  #2025-07-24
-    SHA512 5e74d4343a52fba3c8846e34e31cd7f590935fdfb4ba97bb49902ffc58e6eda55f1c17ece85f7eaf0c5753055ad2c5182b93c58d7176a9d65bdca92e76bad1d9
+    REF 18b087cd2cd4ddc4a79782bf155383a689d5093d  #2026-03-30 v2.1 head, includes mcode-trampoline fix (LuaJIT/LuaJIT#285)
+    SHA512 b534f5fd9fd279abef0d03748376d29418c13c92f69e714be49f966704c546febc680d803cf9e0fc089fe369f44b3dfba9fdbe48ebf1ddc880c85573353a2d6c
     HEAD_REF v2.1
     PATCHES
-        msvcbuild.patch
         003-do-not-set-macosx-deployment-target.patch
         pob-wide-crt.patch
         006-fix-getenvcopy-linux.patch

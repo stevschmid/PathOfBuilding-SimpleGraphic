@@ -2,9 +2,44 @@
 
 Things discovered during the macOS port that should be sent back upstream once stabilized.
 
+## luajit version bump: PR #98's pin is missing critical Apple Silicon JIT fix
+
+**Files:**
+- `vcpkg-ports/ports/luajit/2026-03-30_0/` (renamed from `2025-07-24_1/`)
+- `vcpkg-ports/versions/l-/luajit.json`
+- `vcpkg-ports/versions/baseline.json`
+
+**Bug:** PR #98 pinned LuaJIT to commit `871db2c84ecefd70a850e03a6c340214a81739f0` (2025-07-24). On Apple Silicon arm64, this commit has a fundamental issue: **the JIT compiler can't allocate executable memory.**
+
+LuaJIT's mcode allocator (`src/lj_mcode.c`) needs to place machine code within ±127MB of the `lj_vm_exit_handler` symbol so the arm64 BL/B branch instructions (which encode a ±128MB signed offset) can reach support code. To find a free page in that window, the allocator does up to 27 `mmap()` attempts with placement hints around the target address. **On Apple Silicon, MAP_JIT mmap doesn't honor placement hints** — the kernel allocates JIT pages in its own special region, far from any specific hint. So all 27 attempts fail to land in range, the trace bails with `LJ_TRERR_MCODEAL` (errno 27), and PoB falls back to the interpreter for *every* hot loop. Result: a single passive-tree node click takes ~1.5 seconds instead of <50 ms because the entire stat-recompute pipeline runs interpreted.
+
+We diagnosed this with a `jit.attach` probe in PoB's Launch.lua that recorded trace event counts and abort reasons. The histogram on a single slow frame showed:
+
+| oex | LuaJIT name | count | % |
+|---|---|---|---|
+| 27 | failed to allocate mcode memory | 187,500 | ~75% |
+| 8 | leaving loop in root trace | 39,794 | ~16% |
+| 9 | inner loop in root trace | 21,952 | ~9% |
+| 7 | NYI bytecode | 1,051 | <1% |
+
+Cumulative `stop` count was **0** for the entire run — not a single trace ever successfully compiled. This is a known LuaJIT issue tracked as [LuaJIT/LuaJIT#285](https://github.com/LuaJIT/LuaJIT/issues/285) (with #1280 closed as duplicate). It affects any project that statically links LuaJIT into a `dlopen()`'d shared library on Apple Silicon, and there were comments from multiple affected developers (Minetest devs, game engines, etc.) reporting the same symptom.
+
+**Fix:** Mike Pall implemented a "general solution" on **2025-11-05** in commit [`68354f4447`](https://github.com/LuaJIT/LuaJIT/commit/68354f4447) — *"Allow mcode allocations outside of the jump range to the support code"* — which uses trampoline indirection when an in-range mcode page can't be obtained. PR #98's pinned LuaJIT commit predates this fix by ~3.5 months.
+
+We bumped the overlay port to LuaJIT commit `18b087cd2cd4ddc4a79782bf155383a689d5093d` (2026-03-30, current `v2.1` branch head) which contains the trampoline fix plus ~200 other upstream improvements from the intervening 8 months. Click latency went from ~1.5s to instant.
+
+**Cross-platform impact:** PR #98 also adds `-DLUAJIT_ENABLE_GC64` on Linux as a workaround for a *related but distinct* issue (LuaJIT statically linked into a `dlopen()`'d `.so` failing GC allocation when its code section is loaded above 4 GB virtual address). That GC64 workaround is independent of Mike Pall's mcode fix — but anyone hitting one of these issues should consider whether the LuaJIT bump alone now suffices for both.
+
+**Side cleanup we did at the same time:**
+- Renamed port directory `2025-07-24_1` → `2026-03-30_0` to match the new version-date.
+- Pruned `vcpkg-ports/versions/l-/luajit.json` of port-versions 1–7 from PR #98 + our investigation experiments. Single new entry `2026-03-30 #0` replaces them.
+- Made `msvcbuild.patch` (a Windows MSVC `.bat` patch from PR #98 with PDB/LTCG improvements) conditional on `VCPKG_TARGET_IS_WINDOWS` via the existing `extra_patches` if/list pattern. The patch's @@ line numbers shifted in the new LuaJIT commit and would have needed regenerating; gating it Windows-only sidesteps the fragility entirely (the patch only modifies a `.bat` file that no other platform builds).
+
+**Scope:** this is the single most impactful fix we found. **It belongs upstream in PR #98 itself** as a version bump — both because PR #98 pinned an older LuaJIT and because PR #98's `LUAJIT_ENABLE_GC64` workaround is in the same family of fixes. The diff is small (commit hash + SHA512 + the rename + the conditional patch reorganization). No code changes to anything in `engine/`, `ui_*.cpp`, or anywhere else in SimpleGraphic.
+
 ## luajit portfile: hardcoded `x64-linux-rel`/`x64-linux-dbg` build subdir
 
-**File:** `vcpkg-ports/ports/luajit/2025-07-24_1/portfile.cmake` (lines ~104–119)
+**File:** `vcpkg-ports/ports/luajit/2026-03-30_0/portfile.cmake` (lines ~104–119)
 
 **Bug:** PR #98's symlink fix (the `foreach(BUILDTYPE ...)` block that replaces the broken circular `bin/luajit -> luajit` symlink with the real binary from the build tree) hardcodes the build directory name to `x64-linux-rel` and `x64-linux-dbg`. On any other triplet (e.g. `arm64-osx`) the `EXISTS "${REAL_BIN}"` check is false, the `file(COPY)` never runs, and `vcpkg_copy_tools(TOOL_NAMES luajit ...)` then fails because `bin/luajit` is still the broken symlink the install step left behind:
 
@@ -27,21 +62,35 @@ This is generic — it fixes Linux too (any non-x64-linux Linux triplet would ha
 
 **Port-version:** locally bumped 3 → 4 (in `vcpkg.json`, `versions/l-/luajit.json`, `versions/baseline.json`) to force vcpkg to pick up the change. Upstream PR doesn't need a new port-version bump if it amends PR #98 before merge.
 
-## lcurl `luaL_setfuncs` duplicate symbol — proper fix instead of GNU-ld workaround
+## lcurl `luaL_setfuncs` duplicate symbol — replace GNU-ld flag with per-source rename
 
-**Files:**
-- `libs/Lua-cURLv3/src/l52util.c` (submodule — needs to become a `.patch` applied at build time, or upstreamed to Lua-cURLv3, or carried in a fork)
-- `CMakeLists.txt` (lcurl section, ~line 305)
+**File:** `CMakeLists.txt` (lcurl section)
 
-**Bug:** PR #98 worked around the `luaL_setfuncs` duplicate-symbol collision (LuaJIT 2.1 exports it via its 5.2 compat layer; Lua-cURLv3's `l52util.c` also defines it under its `LUA_VERSION_NUM < 502` branch because LuaJIT reports `LUA_VERSION_NUM == 501`) by passing `-Wl,--allow-multiple-definition` to lcurl's link. That flag is **GNU ld–only**; ld64 (Apple) rejects it as `unknown options: --allow-multiple-definition` and the link fails outright on macOS. (mold and lld both accept it.)
+**Bug:** PR #98 worked around the `luaL_setfuncs` duplicate-symbol collision (LuaJIT 2.1 exports it via its 5.2 compat layer; Lua-cURLv3's `l52util.c` also defines it under its `LUA_VERSION_NUM < 502` branch because LuaJIT reports `LUA_VERSION_NUM == 501`) by passing `-Wl,--allow-multiple-definition` to lcurl's link, gated `if (NOT WIN32)`. That flag is **GNU ld–only**; ld64 (Apple) rejects it as `unknown options: --allow-multiple-definition` and the link fails outright on macOS. (mold and lld both accept it; MSVC link.exe doesn't see the collision in the first place because of how LuaJIT's headers handle import/export visibility on Windows.)
 
-**Proper fix (platform-agnostic):** patch `l52util.c` so the duplicate `luaL_setfuncs` definition is gated behind `!LUAJIT_VERSION_NUM || LUAJIT_VERSION_NUM < 20100`, with a conditional `#include <luajit.h>` (via `__has_include`) so the macro is in scope. Verified via `nm -gU libluajit-5.1.a` that `luaL_setfuncs` is the *only* symbol that actually collides — `lua_rawgetp`, `lua_rawsetp`, `lua_absindex` are NOT in LuaJIT 2.1 and still need the polyfills, so the patch is narrow.
+**Fix:** rename `l52util.c`'s local `luaL_setfuncs` definition out of the way at compile time using a per-source preprocessor define. CMake's `set_source_files_properties(... COMPILE_DEFINITIONS ...)` lets us scope the macro to one translation unit:
 
-With the source fix in place, the `target_link_options(lcurl PRIVATE "-Wl,--allow-multiple-definition")` block in CMakeLists.txt becomes unnecessary on **all** platforms and was removed entirely.
+```cmake
+if (NOT WIN32)
+    set_source_files_properties(${LCURL_SOURCE_DIR}/src/l52util.c PROPERTIES
+        COMPILE_DEFINITIONS "luaL_setfuncs=lcurl_unused_luaL_setfuncs")
+endif()
+```
 
-**Scope:** the `l52util.c` patch is genuinely upstream-able to Lua-cURLv3 (it's a correctness fix, not platform-specific). The CMakeLists.txt cleanup folds into PR #98. Worth doing in that order so the CMake change has a clean reason ("the upstream submodule no longer needs the workaround").
+This rewrites every occurrence of the identifier `luaL_setfuncs` in `l52util.c` (and only in that file) to `lcurl_unused_luaL_setfuncs`. Effects:
 
-**Submodule cleanliness:** the patch is currently applied directly in the `libs/Lua-cURLv3` worktree, which leaves the submodule dirty. Before merging to master, convert it to either (a) a `.patch` file applied at configure time, (b) a fork of Lua-cURLv3 we point the submodule at, or (c) get it upstreamed first.
+1. The local function definition becomes `void lcurl_unused_luaL_setfuncs(...)` — different symbol name, no collision.
+2. The one internal call inside `lutil_createmetap` (also in `l52util.c`) calls the renamed local function. Since the renamed function is the original polyfill verbatim, behavior is identical.
+3. Every other `.c` file in `Lua-cURLv3/src/` compiles unchanged. Their calls to `luaL_setfuncs` link to LuaJIT's real symbol normally.
+4. The renamed function ends up as dead code that the linker may strip.
+
+The submodule worktree is **never** modified — no patch file, no in-place edit, no `.gitmodules` config.
+
+Verified via `nm -gU libluajit-5.1.a` that `luaL_setfuncs` is the *only* symbol that actually collides — `lua_rawgetp`, `lua_rawsetp`, `lua_absindex` are NOT exported by LuaJIT 2.1 and still need the polyfills, so the rename is narrowly targeted to just the one offending function.
+
+With this in place, the `target_link_options(lcurl PRIVATE "-Wl,--allow-multiple-definition")` block in CMakeLists.txt is removed.
+
+**Scope:** ~4 lines of CMake (gated `NOT WIN32`), no patch file, no submodule pollution. Cleaner than PR #98's GNU-ld workaround AND fixes macOS at the same time. Folds naturally into PR #98 as a one-line replacement of the existing `target_link_options` block.
 
 ## CMakeLists.txt: `SIMPLEGRAPHIC_PLATFORM_SOURCES` clobbered on Apple
 
