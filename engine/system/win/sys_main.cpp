@@ -594,6 +594,11 @@ std::filesystem::path FindBasePath()
 	basePath[len] = '\0';
 	progPath = basePath;
 #elif __APPLE__ && __MACH__
+	if (const char* sgBasePath = ::getenv("SG_BASE_PATH")) {
+		progPath = sgBasePath;
+		progPath = weakly_canonical(progPath);
+		return progPath;
+	}
 	pid_t pid = getpid();
 	char basePath[PROC_PIDPATHINFO_MAXSIZE]{};
 	proc_pidpath(pid, basePath, sizeof(basePath));

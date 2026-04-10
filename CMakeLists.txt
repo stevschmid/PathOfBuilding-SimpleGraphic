@@ -78,18 +78,18 @@ set(SIMPLEGRAPHIC_SOURCES
 
 set (SIMPLEGRAPHIC_PLATFORM_SOURCES)
 if (APPLE)
-    set (SIMPLEGRAPHIC_PLATFORM_SOURCES
+    list (APPEND SIMPLEGRAPHIC_PLATFORM_SOURCES
         "engine/system/win/sys_macos.mm"
     )
 endif()
 
 if (WIN32)
-    set (SIMPLEGRAPHIC_PLATFORM_SOURCES
+    list (APPEND SIMPLEGRAPHIC_PLATFORM_SOURCES
         "engine/system/win/sys_console.cpp"
         "SimpleGraphic.rc"
     )
 else()
-    set (SIMPLEGRAPHIC_PLATFORM_SOURCES
+    list (APPEND SIMPLEGRAPHIC_PLATFORM_SOURCES
         "engine/system/win/sys_console_unix.cpp"
     )
 endif()
@@ -301,11 +301,6 @@ target_include_directories(lcurl
     PRIVATE
     ${LCURL_SOURCE_DIR}/src
 )
-
-if (NOT WIN32)
-    # LuaJIT 2.1 already provides luaL_setfuncs; l52util.c also defines it as a Lua 5.1 compat shim
-    target_link_options(lcurl PRIVATE "-Wl,--allow-multiple-definition")
-endif()
 
 target_link_libraries(lcurl
     PRIVATE
