@@ -517,6 +517,14 @@ if (APPLE)
             DESTINATION "${POB_RES_DEST}"
             PATTERN "*.cfg" EXCLUDE
         )
+        # macOS bootstrap entry: overlays src/mac_entry.lua on top of the
+        # upstream Lua tree. The launcher uses this as the entry script
+        # instead of Launch.lua so we can install the in-app updater's
+        # manifest filter before any upstream Lua code runs. The file is
+        # not in any manifest, so the updater never tracks or overwrites it.
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/macos/mac_entry.lua"
+            DESTINATION "${POB_RES_DEST}/src"
+        )
     else()
         message(WARNING
             "POB_LUA_TREE='${POB_LUA_TREE}' has no src/Launch.lua; the .app "

@@ -9,6 +9,12 @@
 //      The launcher takes no arguments — it auto-discovers the script and
 //      data paths from its own location.
 //
+//      In bundle mode the entry script is src/mac_entry.lua (a thin
+//      bootstrap that installs the in-app updater's manifest filter, then
+//      hands off to src/Launch.lua via dofile). If mac_entry.lua isn't
+//      present, we fall back to src/Launch.lua directly so a stripped-down
+//      bundle still launches.
+//
 //   2. Dev mode (running the binary directly with a script path argument)
 //      Same shape as PR #98's linux/launcher.c: argv[1] is a path to a
 //      Lua script, and the launcher derives the PoB root from it. Used for
@@ -109,10 +115,20 @@ int main(int argc, char** argv)
     if (!realpath(bundleResources, bundleResourcesAbs))
         bundleResourcesAbs[0] = '\0';
 
-    char bundleScript[PATH_MAX];
-    snprintf(bundleScript, sizeof(bundleScript), "%s/src/Launch.lua", bundleResourcesAbs);
+    char bundleLaunch[PATH_MAX];
+    snprintf(bundleLaunch, sizeof(bundleLaunch), "%s/src/Launch.lua", bundleResourcesAbs);
 
-    int bundleMode = (bundleResourcesAbs[0] != '\0') && file_exists(bundleScript);
+    // Prefer the macOS bootstrap entry (which patches the in-app updater
+    // before handing off to Launch.lua); fall back to Launch.lua directly
+    // if the bootstrap is missing.
+    char bundleEntry[PATH_MAX];
+    snprintf(bundleEntry, sizeof(bundleEntry), "%s/src/mac_entry.lua", bundleResourcesAbs);
+    if (!file_exists(bundleEntry)) {
+        strncpy(bundleEntry, bundleLaunch, sizeof(bundleEntry));
+        bundleEntry[sizeof(bundleEntry) - 1] = '\0';
+    }
+
+    int bundleMode = (bundleResourcesAbs[0] != '\0') && file_exists(bundleLaunch);
 
     // ----- Compute the script path, base path, and Lua paths -----
     char scriptAbs[PATH_MAX];
@@ -122,7 +138,7 @@ int main(int argc, char** argv)
 
     if (bundleMode) {
         // Bundle: ignore argv entirely, use the bundled tree.
-        strncpy(scriptAbs, bundleScript, sizeof(scriptAbs));
+        strncpy(scriptAbs, bundleEntry, sizeof(scriptAbs));
         scriptAbs[sizeof(scriptAbs) - 1] = '\0';
 
         strncpy(sgBasePath, bundleResourcesAbs, sizeof(sgBasePath));
