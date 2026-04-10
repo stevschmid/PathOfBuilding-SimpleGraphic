@@ -14,6 +14,20 @@ endif ()
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
+# On macOS, use a project-local overlay triplet that builds the angle vcpkg
+# port as a shared library while keeping everything else static. GLFW's EGL
+# backend dlopen()s libEGL.dylib at runtime, so ANGLE must exist as a real
+# .dylib on disk rather than statically linked into libSimpleGraphic.dylib.
+if (APPLE AND NOT DEFINED CACHE{VCPKG_TARGET_TRIPLET})
+    list(APPEND VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg-triplets")
+    set(VCPKG_OVERLAY_TRIPLETS "${VCPKG_OVERLAY_TRIPLETS}" CACHE STRING "")
+    set(VCPKG_TARGET_TRIPLET "arm64-osx-pob" CACHE STRING "")
+    # Force the host triplet to match the target so vcpkg doesn't think we're
+    # cross-compiling (which breaks luajit's HOST_CC detection — minilua links
+    # with `:` instead of `cc` and silently produces no binary).
+    set(VCPKG_HOST_TRIPLET "arm64-osx-pob" CACHE STRING "")
+endif()
+
 include(${PROJECT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake)
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ".")
@@ -257,6 +271,18 @@ target_link_libraries(SimpleGraphic
 install(FILES $<TARGET_RUNTIME_DLLS:SimpleGraphic> DESTINATION ".")
 install(TARGETS SimpleGraphic RUNTIME DESTINATION "." LIBRARY DESTINATION ".")
 
+# On macOS, $<TARGET_RUNTIME_DLLS:> evaluates to empty (it's effectively
+# Windows-only), so explicitly install the angle dylibs that our launcher
+# pre-dlopen()s by absolute path.
+if (APPLE)
+    install(IMPORTED_RUNTIME_ARTIFACTS
+        unofficial::angle::libEGL
+        unofficial::angle::libGLESv2
+        LIBRARY DESTINATION "."
+        RUNTIME DESTINATION "."
+    )
+endif()
+
 if (WIN32)
     set(DEPS_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
 
@@ -410,6 +436,13 @@ install(FILES $<TARGET_RUNTIME_DLLS:lzip> DESTINATION ".")
 # Linux launcher
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_executable(PathOfBuilding linux/launcher.c)
+    target_link_libraries(PathOfBuilding PRIVATE ${CMAKE_DL_LIBS})
+    install(TARGETS PathOfBuilding RUNTIME DESTINATION ".")
+endif()
+
+# macOS launcher
+if (APPLE)
+    add_executable(PathOfBuilding macos/launcher.c)
     target_link_libraries(PathOfBuilding PRIVATE ${CMAKE_DL_LIBS})
     install(TARGETS PathOfBuilding RUNTIME DESTINATION ".")
 endif()

@@ -2,6 +2,16 @@
     "versions": [
       {
         "version-string": "chromium_5414",
+        "port-version": 11,
+        "path": "$/ports/angle"
+      },
+      {
+        "version-string": "chromium_5414",
+        "port-version": 10,
+        "path": "$/ports/angle"
+      },
+      {
+        "version-string": "chromium_5414",
         "port-version": 9,
         "path": "$/ports/angle"
       }

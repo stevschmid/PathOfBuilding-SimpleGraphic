@@ -286,8 +286,15 @@ if (USE_ANGLE_EGL OR ENABLE_WEBGL)
         target_sources(GLESv2 PRIVATE src/libGLESv2/libGLESv2_autogen.def)
         set_target_properties(GLESv2 PROPERTIES OUTPUT_NAME libGLESv2)
     endif ()
-    # Rename libs to avoid conflict with system OpenGL
-    if(NOT VCPKG_TARGET_IS_WINDOWS)
+    # Rename libs to avoid conflict with system OpenGL on Linux/BSD.
+    # macOS has no system libEGL/libGLESv2, and GLFW dlopens these by their
+    # plain names (libEGL.dylib / libGLESv2.dylib), so keep the unsuffixed
+    # names there. Also clear PREFIX so the auto `lib` prefix doesn't stack
+    # with the `lib` already in OUTPUT_NAME → would otherwise produce
+    # `liblibGLESv2.dylib`.
+    if(APPLE)
+        set_target_properties(GLESv2 PROPERTIES OUTPUT_NAME libGLESv2 PREFIX "")
+    elseif(NOT VCPKG_TARGET_IS_WINDOWS)
         set_target_properties(GLESv2 PROPERTIES OUTPUT_NAME libGLESv2_angle)
     endif()
 
@@ -316,8 +323,13 @@ if (USE_ANGLE_EGL OR ENABLE_WEBGL)
             target_sources(EGL PRIVATE src/libEGL/libEGL_autogen.def)
             set_target_properties(EGL PROPERTIES OUTPUT_NAME libEGL)
         endif ()
-        # Rename libs to avoid conflict with system OpenGL
-        if(NOT VCPKG_TARGET_IS_WINDOWS)
+        # Rename libs to avoid conflict with system OpenGL on Linux/BSD.
+        # macOS has no system libEGL, and GLFW dlopens libEGL.dylib by
+        # plain name, so keep the unsuffixed name there. Also clear PREFIX
+        # so the auto `lib` prefix doesn't stack with the `lib` in OUTPUT_NAME.
+        if(APPLE)
+            set_target_properties(EGL PROPERTIES OUTPUT_NAME libEGL PREFIX "")
+        elseif(NOT VCPKG_TARGET_IS_WINDOWS)
             set_target_properties(EGL PROPERTIES OUTPUT_NAME libEGL_angle)
         endif()
 

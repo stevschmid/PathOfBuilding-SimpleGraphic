@@ -67,3 +67,114 @@ On macOS the first block sets `sys_macos.mm`, then the second block's `else()` b
 **Fix:** change both `set()` calls in the conditional branches to `list(APPEND ...)` so the contributions stack instead of clobber. The leading `set(SIMPLEGRAPHIC_PLATFORM_SOURCES)` already initializes the variable to empty, which is exactly what `list(APPEND)` needs.
 
 **Scope:** small, platform-agnostic correctness fix. Folds naturally into PR #98 (since #98 didn't touch this block but it's part of the same general "make non-Windows builds work" theme), or as a tiny standalone PR.
+
+## r_font.cpp: text visibility cull uses logical window size, not framebuffer size
+
+**File:** `engine/render/r_font.cpp` (line ~325, `r_font_c::DrawTextLine`)
+
+**Bug:** the per-line "is this even visible?" early-out reads:
+
+```cpp
+if (pos[Y] >= renderer->sys->video->vid.size[1] || pos[Y] <= -height) {
+    // process color codes only, then return without drawing
+}
+```
+
+`pos[Y]` is in the same coordinate space as `VirtualScreenWidth/Height()`, which in `apiDpiAware` mode returns `vid.fbSize` (physical framebuffer pixels). But the comparison upper bound is `vid.size[1]` — the **logical** window height. On any HiDPI display where `vid.size[1] != vid.fbSize[1]` (macOS Retina, HiDPI Wayland, fractional Windows DPI scales), this is half (or some fraction) of the framebuffer height. Every text draw whose `pos[Y]` lands in the bottom half of the screen short-circuits to the no-draw path silently. Checkboxes and other geometry drawn through `r_layer_c::Quad` still appear because they use the correct `VirtualScreenWidth()` cull a few lines down (line ~384), so the symptom is "rectangles fine, labels missing in the lower half of the screen / inside any popup positioned there / inside hover tooltips".
+
+**Fix:** use `renderer->VirtualScreenHeight()` for the upper-bound check, matching the coordinate space of `pos[Y]` and the existing X-axis cull at line 384:
+
+```cpp
+if (pos[Y] >= renderer->VirtualScreenHeight() || pos[Y] <= -height) {
+```
+
+**Scope:** one-line fix, platform-agnostic, fixes a serious-looking visual bug on every HiDPI display (Linux Wayland users with fractional scaling are likely affected too — they just may not have noticed because Linux PoB usage is rare). High upstream value.
+
+## sys_video.cpp: cursor coordinates on macOS are in logical points, not pixels
+
+**File:** `engine/system/win/sys_video.cpp` (`sys_video_c::GetRelativeCursor`)
+
+**Bug:** GLFW's `glfwGetCursorPos` returns logical "screen coordinates" (points) on macOS Cocoa but physical pixels on Win32 (because Win32's `GetCursorPos` is in pixels under per-monitor-DPI-aware-V2, which GLFW enables). The rest of the engine assumes physical pixels — `vid.fbSize` is in pixels, `VirtualScreenWidth/Height()` returns pixels in `apiDpiAware` mode, the Lua `GetCursorPos` binding does `VirtualMap(cursorX) / dpiScale` on the assumption that `cursorX` is already in pixels. On macOS Retina the cursor reports at half (or a fraction) of its visible position, so hit-testing is offset by exactly the DPI scale factor.
+
+**Fix:** normalize at the source — multiply the GLFW cursor position by `vid.dpiScale` on Apple so the rest of the engine sees a consistent coordinate system:
+
+```cpp
+glfwGetCursorPos(wnd, &xpos, &ypos);
+#ifdef __APPLE__
+    xpos *= vid.dpiScale;
+    ypos *= vid.dpiScale;
+#endif
+```
+
+**Scope:** Apple-only #ifdef around a one-line scaling. The proper long-term fix is probably to normalize the engine's internal coordinate space and stop mixing logical/physical anywhere — but this `#ifdef` is the minimal change that unblocks macOS without touching Windows. Worth proposing alongside the r_font.cpp fix as part of a "HiDPI cleanup" mini-series.
+
+## launcher (Linux + macOS): `dirname()` may return static storage, second call clobbers first
+
+**Files:** `linux/launcher.c`, `macos/launcher.c`
+
+**Bug:** POSIX `dirname(3)` is allowed to return either a pointer to a modified version of the input or a pointer to a **static buffer that subsequent `dirname()` calls will overwrite**. macOS libc takes the static-buffer path. The original `linux/launcher.c` from PR #98 calls `dirname()` twice (once on the launcher exe path, once on the script path) and stores both return values as `char*` aliases — on macOS, the second call silently rewrites the first call's value, so `setenv("SG_BASE_PATH", dir, 1)` ends up writing the script directory instead of the launcher directory. The downstream effect is that `FindBasePath()` returns the wrong directory and the engine can't find its data files (fonts, etc.).
+
+The Linux launcher dodges this only because glibc's `dirname()` happens to modify in place and never returns static storage. POSIX permits both behaviors; relying on glibc's specific implementation is technically a latent bug there too.
+
+**Fix:** copy each `dirname()` return into an owned buffer immediately:
+
+```c
+char dir[PATH_MAX];
+strncpy(dir, dirname(exeDirSrc), sizeof(dir));
+dir[sizeof(dir) - 1] = '\0';
+```
+
+**Scope:** the macOS launcher (`macos/launcher.c`) we're adding will have this baked in from the start. The Linux launcher in PR #98 should also be patched to use the same pattern — defends against any future libc change and matches POSIX intent.
+
+## CMakeLists: `$<TARGET_RUNTIME_DLLS:>` is effectively Windows-only on macOS
+
+**File:** `CMakeLists.txt` (install rules around `SimpleGraphic`)
+
+**Bug:** the install rule uses `install(FILES $<TARGET_RUNTIME_DLLS:SimpleGraphic> DESTINATION ".")` to copy all transitively-linked shared libraries next to the launcher. On Windows this captures every `.dll` from imported targets in the link closure. On macOS the generator expression evaluates to **empty** despite imported targets being correctly defined as `SHARED IMPORTED` with valid `IMPORTED_LOCATION_RELEASE` paths. The result: when a vcpkg dep ships a `.dylib` (e.g. our `angle` overlay built dynamically), the install step silently leaves it behind.
+
+**Fix:** for Apple, supplement with `install(IMPORTED_RUNTIME_ARTIFACTS ...)` listing each imported target whose runtime side needs to ship. CMake 3.21+:
+
+```cmake
+if (APPLE)
+    install(IMPORTED_RUNTIME_ARTIFACTS
+        unofficial::angle::libEGL
+        unofficial::angle::libGLESv2
+        LIBRARY DESTINATION "."
+        RUNTIME DESTINATION "."
+    )
+endif()
+```
+
+**Scope:** affects any non-Windows build that links a shared imported target from vcpkg. On Linux, PR #98 sidesteps this by linking everything statically (`VCPKG_LIBRARY_LINKAGE static` is the default for `arm64-osx`/`x64-linux`). The macOS port hits it because we *have* to build ANGLE shared (GLFW's EGL backend `dlopen`s `libEGL.dylib` by leaf name and won't find symbols statically linked into our own dylib). Worth noting in PR #98 as a known limitation, or fixing if anyone wants shared-linkage Linux builds.
+
+## ANGLE port (overlay): `liblibEGL.dylib` from double `lib` prefix when built shared on macOS
+
+**File:** `vcpkg-ports/ports/angle/cmake-buildsystem/CMakeLists.txt` (around the `OUTPUT_NAME` set on the `EGL` and `GLESv2` targets)
+
+**Bug:** the overlay angle CMakeLists already has a Windows path that sets `OUTPUT_NAME libGLESv2` / `libEGL` (full leading `lib`). For non-Windows it has a single fallback that sets `OUTPUT_NAME libGLESv2_angle` / `libEGL_angle` to avoid colliding with system OpenGL on Linux. CMake on macOS adds an automatic `lib` prefix to shared libraries (unlike Windows DLLs), so when angle is built as a `.dylib`, the auto prefix stacks with the leading `lib` in OUTPUT_NAME and you get `liblibEGL_angle.dylib`, `liblibGLESv2_angle.dylib`. Plus, on macOS there's no system `libEGL.dylib` to collide with anyway, so the `_angle` suffix is both unnecessary *and* breaks GLFW which `dlopen`s `libEGL.dylib` by its bare leaf name.
+
+**Fix:** branch on `APPLE` in addition to `VCPKG_TARGET_IS_WINDOWS`. On Apple, set `OUTPUT_NAME libGLESv2/libEGL` AND `PREFIX ""` so the final filename is `libGLESv2.dylib` / `libEGL.dylib`:
+
+```cmake
+if(APPLE)
+    set_target_properties(GLESv2 PROPERTIES OUTPUT_NAME libGLESv2 PREFIX "")
+elseif(NOT VCPKG_TARGET_IS_WINDOWS)
+    set_target_properties(GLESv2 PROPERTIES OUTPUT_NAME libGLESv2_angle)
+endif()
+```
+
+(Same for `EGL`.)
+
+Two related portfile/forwarding bugs: the overlay portfile only forwards `-DVCPKG_TARGET_IS_WINDOWS=...` to the angle build, not `VCPKG_TARGET_IS_OSX`. So inside the angle CMakeLists, conditioning on `VCPKG_TARGET_IS_OSX` silently does nothing — use CMake's native `APPLE` variable instead.
+
+**Scope:** only matters when building ANGLE shared on macOS, which is forced by our overlay triplet. Worth folding into the angle port if we ever upstream the overlay, otherwise stays as a permanent macOS-port-local patch.
+
+## vcpkg overlay triplet for per-port linkage override
+
+**Files:** `vcpkg-triplets/arm64-osx-pob.cmake`, `CMakeLists.txt` (Apple branch before vcpkg.cmake `include()`)
+
+**Not a bug, but an architectural note worth recording.** The default `arm64-osx` triplet uses `VCPKG_LIBRARY_LINKAGE static`, which is the right global default — but ANGLE specifically must be built shared on macOS (so GLFW's EGL backend can `dlopen` it at runtime). vcpkg supports per-port linkage overrides via the `if(PORT STREQUAL "...")` block inside a triplet file, but the stock `arm64-osx` triplet lives in the vcpkg submodule and we shouldn't edit it. The clean solution is a project-local overlay triplet at `vcpkg-triplets/arm64-osx-pob.cmake` with a per-port override, plus `VCPKG_OVERLAY_TRIPLETS` and `VCPKG_TARGET_TRIPLET` set in CMakeLists.txt before the vcpkg.cmake include.
+
+**One subtle gotcha worth documenting**: also set `VCPKG_HOST_TRIPLET` to the same custom triplet name. Otherwise vcpkg's `host_triplet != target_triplet` check considers the build a cross-compile (even though both are native arm64-osx), and the luajit portfile's `if(VCPKG_CROSSCOMPILING)` branch fires and passes `BUILDVM_X=` to luajit's Makefile but doesn't set `HOST_CC` for `host/minilua`. The luajit Makefile then links `host/minilua` with `:` (the noop shell builtin) instead of `cc`, silently produces no binary, and the install fails further down. Setting host==target avoids this.
+
+This isn't a bug to upstream — it's the intended way to use custom triplets — but it's the kind of lore that costs an hour to rediscover, so worth a note.

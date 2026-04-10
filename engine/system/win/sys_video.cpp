@@ -737,6 +737,15 @@ void sys_video_c::GetRelativeCursor(int& x, int& y)
 	if (!initialised) return;
 	double xpos, ypos;
 	glfwGetCursorPos(wnd, &xpos, &ypos);
+#ifdef __APPLE__
+	// glfwGetCursorPos returns logical points on macOS (Cocoa's window
+	// coordinate space), but the rest of the engine works in physical
+	// framebuffer pixels (vid.fbSize) — and the GetCursorPos Lua API
+	// later divides by dpiScale on the assumption that the value is
+	// already in pixels. Bring macOS in line by scaling here.
+	xpos *= vid.dpiScale;
+	ypos *= vid.dpiScale;
+#endif
 	x = (int)floor(xpos);
 	y = (int)floor(ypos);
 }
