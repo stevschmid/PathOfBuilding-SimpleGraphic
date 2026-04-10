@@ -1,10 +1,21 @@
 // macOS launcher for SimpleGraphic / Path of Building
-// Loads libSimpleGraphic.dylib from the same directory and calls RunLuaFileAsWin.
 //
-// Mirrors linux/launcher.c, with two macOS-specific differences:
-//   1. Self-path resolution uses _NSGetExecutablePath instead of /proc/self/exe.
-//      The path returned may contain symlinks or "..", so we realpath() it.
-//   2. The engine library is libSimpleGraphic.dylib and Lua C modules are .dylib.
+// Two operating modes:
+//
+//   1. Bundle mode (default when running as "Path of Building.app")
+//      The executable lives at  Path of Building.app/Contents/MacOS/Path of Building
+//      and PoB's Lua tree, fonts, and bundled Lua modules are in
+//      Path of Building.app/Contents/Resources/{src,SimpleGraphic,lua}.
+//      The launcher takes no arguments — it auto-discovers the script and
+//      data paths from its own location.
+//
+//   2. Dev mode (running the binary directly with a script path argument)
+//      Same shape as PR #98's linux/launcher.c: argv[1] is a path to a
+//      Lua script, and the launcher derives the PoB root from it. Used for
+//      iterating against an unbundled checkout of the PoB main repo.
+//
+// Mode is detected by checking whether <exeDir>/../Resources/src/Launch.lua
+// exists. If yes → bundle, if no → dev.
 
 #include <dlfcn.h>
 #include <libgen.h>
@@ -14,13 +25,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 typedef int (*RunLuaFileAsWin_t)(int argc, char** argv);
 
+static int file_exists(const char* path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 int main(int argc, char** argv)
 {
-    // Resolve our own executable's directory.
+    // ----- Resolve our own executable's directory -----
     // _NSGetExecutablePath gives us a path that may not be canonical
     // (can contain symlinks or relative components), so realpath it.
     char rawExePath[PATH_MAX];
@@ -46,7 +64,7 @@ int main(int argc, char** argv)
     strncpy(dir, dirname(exeDirSrc), sizeof(dir));
     dir[sizeof(dir) - 1] = '\0';
 
-    // Pre-load ANGLE's GLES + EGL shared libraries from our own directory.
+    // ----- Pre-load ANGLE GLES + EGL from our own directory -----
     // GLFW's EGL backend later does dlopen("libEGL.dylib", ...) by leaf name,
     // which dyld will satisfy from the already-loaded image table once we've
     // loaded these by absolute path. (dyld does NOT search LC_RPATH or
@@ -66,7 +84,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Load libSimpleGraphic.dylib from the same directory.
+    // ----- Load libSimpleGraphic.dylib from the same directory -----
     char libPath[PATH_MAX];
     snprintf(libPath, sizeof(libPath), "%s/libSimpleGraphic.dylib", dir);
 
@@ -82,65 +100,98 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // argv[0] for RunLuaFileAsWin must be the Lua script path.
-    // Skip our own argv[0] (the launcher binary).
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <script.lua> [args...]\n", argv[0]);
-        return 1;
-    }
+    // ----- Detect bundle vs dev mode -----
+    // Bundle layout:
+    //   <exeDir>/../Resources/src/Launch.lua
+    char bundleResources[PATH_MAX];
+    snprintf(bundleResources, sizeof(bundleResources), "%s/../Resources", dir);
+    char bundleResourcesAbs[PATH_MAX];
+    if (!realpath(bundleResources, bundleResourcesAbs))
+        bundleResourcesAbs[0] = '\0';
 
-    // Resolve script path to absolute so basePath resolution inside SimpleGraphic
-    // works correctly. basePath is derived from the launcher's exe path, so a
-    // relative script path would otherwise be resolved against the launcher dir
-    // rather than the current working directory.
+    char bundleScript[PATH_MAX];
+    snprintf(bundleScript, sizeof(bundleScript), "%s/src/Launch.lua", bundleResourcesAbs);
+
+    int bundleMode = (bundleResourcesAbs[0] != '\0') && file_exists(bundleScript);
+
+    // ----- Compute the script path, base path, and Lua paths -----
     char scriptAbs[PATH_MAX];
-    if (realpath(argv[1], scriptAbs) == NULL) {
-        perror(argv[1]);
-        return 1;
-    }
-    argv[1] = scriptAbs;
+    char sgBasePath[PATH_MAX];
+    char luaPath[PATH_MAX * 4];
+    char luaCPath[PATH_MAX * 4];
 
-    // Derive the PoB root from the script location:
-    //   script = <pob_root>/src/Launch.lua
-    //   script_dir = <pob_root>/src
-    //   pob_root = <pob_root>
-    // (the runtime Lua modules live at <pob_root>/runtime/lua/)
-    char scriptDirBuf[PATH_MAX];
-    strncpy(scriptDirBuf, scriptAbs, sizeof(scriptDirBuf));
-    char scriptDir[PATH_MAX];
-    strncpy(scriptDir, dirname(scriptDirBuf), sizeof(scriptDir));
-    scriptDir[sizeof(scriptDir) - 1] = '\0';
+    if (bundleMode) {
+        // Bundle: ignore argv entirely, use the bundled tree.
+        strncpy(scriptAbs, bundleScript, sizeof(scriptAbs));
+        scriptAbs[sizeof(scriptAbs) - 1] = '\0';
 
-    char pobRoot[PATH_MAX];
-    snprintf(pobRoot, sizeof(pobRoot), "%s/..", scriptDir);
-    char pobRootAbs[PATH_MAX];
-    if (!realpath(pobRoot, pobRootAbs))
-        strncpy(pobRootAbs, pobRoot, sizeof(pobRootAbs));
+        strncpy(sgBasePath, bundleResourcesAbs, sizeof(sgBasePath));
+        sgBasePath[sizeof(sgBasePath) - 1] = '\0';
 
-    // Tell SimpleGraphic where the runtime data (fonts, etc.) lives.
-    // When installed, SimpleGraphic/Fonts/ sits alongside the launcher binary,
-    // so the launcher's own directory serves as the base path.
-    if (!getenv("SG_BASE_PATH"))
-        setenv("SG_BASE_PATH", dir, 1);
+        snprintf(luaPath, sizeof(luaPath),
+            "%s/lua/?.lua;%s/lua/?/init.lua;;",
+            bundleResourcesAbs, bundleResourcesAbs);
+    } else {
+        // Dev: argv[1] is the Lua script path, derive everything from it.
+        if (argc < 2) {
+            fprintf(stderr,
+                "Usage: %s <script.lua> [args...]\n"
+                "(Or run as a Path of Building.app bundle.)\n",
+                argv[0]);
+            return 1;
+        }
 
-    // Set LUA_PATH to include the PoB runtime Lua directory.
-    // Work around pob-wide-crt.patch bug: _lua_getenvcopy() calls strdup(getenv(name))
-    // which crashes on NULL, so we always set these even if we're not overriding.
-    if (!getenv("LUA_PATH")) {
-        char luaPath[PATH_MAX * 4];
+        if (realpath(argv[1], scriptAbs) == NULL) {
+            perror(argv[1]);
+            return 1;
+        }
+
+        char scriptDirBuf[PATH_MAX];
+        strncpy(scriptDirBuf, scriptAbs, sizeof(scriptDirBuf));
+        char scriptDir[PATH_MAX];
+        strncpy(scriptDir, dirname(scriptDirBuf), sizeof(scriptDir));
+        scriptDir[sizeof(scriptDir) - 1] = '\0';
+
+        char pobRoot[PATH_MAX];
+        snprintf(pobRoot, sizeof(pobRoot), "%s/..", scriptDir);
+        char pobRootAbs[PATH_MAX];
+        if (!realpath(pobRoot, pobRootAbs))
+            strncpy(pobRootAbs, pobRoot, sizeof(pobRootAbs));
+
+        // SG_BASE_PATH on dev: the launcher's own dir (where we install
+        // SimpleGraphic/Fonts/ alongside the binary).
+        strncpy(sgBasePath, dir, sizeof(sgBasePath));
+        sgBasePath[sizeof(sgBasePath) - 1] = '\0';
+
         snprintf(luaPath, sizeof(luaPath),
             "%s/runtime/lua/?.lua;%s/runtime/lua/?/init.lua;;",
             pobRootAbs, pobRootAbs);
+    }
+
+    // LUA_CPATH always points at the launcher dir — both modes have the
+    // Lua C modules sitting next to the binary.
+    snprintf(luaCPath, sizeof(luaCPath), "%s/?.dylib;;", dir);
+
+    // ----- Push env vars and hand off to SimpleGraphic -----
+    // Tell SimpleGraphic where the runtime data (fonts, etc.) lives.
+    if (!getenv("SG_BASE_PATH"))
+        setenv("SG_BASE_PATH", sgBasePath, 1);
+
+    // Work around pob-wide-crt.patch: _lua_getenvcopy() calls strdup(getenv(name))
+    // which crashes on NULL, so we always set these even if we're not overriding.
+    if (!getenv("LUA_PATH"))
         setenv("LUA_PATH", luaPath, 1);
-    }
-
-    // Set LUA_CPATH to include the launcher dir (where our .dylib Lua modules
-    // live without lib prefix).
-    if (!getenv("LUA_CPATH")) {
-        char luaCPath[PATH_MAX * 4];
-        snprintf(luaCPath, sizeof(luaCPath), "%s/?.dylib;;", dir);
+    if (!getenv("LUA_CPATH"))
         setenv("LUA_CPATH", luaCPath, 1);
-    }
 
-    return runLua(argc - 1, argv + 1);
+    // Build the argv vector handed to RunLuaFileAsWin: argv[0] must be the
+    // Lua script path, followed by any extra script arguments.
+    if (bundleMode) {
+        // No script args from the user — just hand over the script path.
+        char* runArgv[] = { scriptAbs, NULL };
+        return runLua(1, runArgv);
+    } else {
+        argv[1] = scriptAbs;
+        return runLua(argc - 1, argv + 1);
+    }
 }

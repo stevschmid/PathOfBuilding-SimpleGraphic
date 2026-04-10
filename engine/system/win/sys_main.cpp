@@ -622,6 +622,15 @@ std::tuple<std::optional<std::filesystem::path>, std::optional<std::string>> Fin
 	CoTaskMemFree(osPath);
 	std::filesystem::path path(pathStr);
 	return { weakly_canonical(path), {} };
+#elif __APPLE__ && __MACH__
+	// macOS convention: ~/Library/Application Support is where apps store
+	// per-user data. PoB will create a "Path of Building" subdirectory there.
+	if (char const* home_path = getenv("HOME")) {
+		return { std::filesystem::path(home_path) / "Library/Application Support", {} };
+	}
+	uid_t uid = getuid();
+	struct passwd *pw = getpwuid(uid);
+	return { std::filesystem::path(pw->pw_dir) / "Library/Application Support", {} };
 #else
 	if (char const* data_home_path = getenv("XDG_DATA_HOME")) {
 		return { data_home_path, {} };

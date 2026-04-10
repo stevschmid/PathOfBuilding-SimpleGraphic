@@ -14,21 +14,31 @@ endif ()
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
-# On macOS, use a project-local overlay triplet that builds the angle vcpkg
-# port as a shared library while keeping everything else static. GLFW's EGL
-# backend dlopen()s libEGL.dylib at runtime, so ANGLE must exist as a real
-# .dylib on disk rather than statically linked into libSimpleGraphic.dylib.
+# macOS: overlay triplet that builds angle as a shared library so GLFW's
+# EGL backend can dlopen libEGL.dylib at runtime. Host triplet must match
+# target or vcpkg treats the build as cross-compile and luajit fails.
 if (APPLE AND NOT DEFINED CACHE{VCPKG_TARGET_TRIPLET})
     list(APPEND VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg-triplets")
     set(VCPKG_OVERLAY_TRIPLETS "${VCPKG_OVERLAY_TRIPLETS}" CACHE STRING "")
     set(VCPKG_TARGET_TRIPLET "arm64-osx-pob" CACHE STRING "")
-    # Force the host triplet to match the target so vcpkg doesn't think we're
-    # cross-compiling (which breaks luajit's HOST_CC detection — minilua links
-    # with `:` instead of `cc` and silently produces no binary).
     set(VCPKG_HOST_TRIPLET "arm64-osx-pob" CACHE STRING "")
 endif()
 
 include(${PROJECT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake)
+
+# Install destinations: flat on Linux/Windows, .app bundle on macOS.
+if (APPLE)
+    set(POB_BIN_DEST "Path of Building.app/Contents/MacOS")
+    set(POB_RES_DEST "Path of Building.app/Contents/Resources")
+else()
+    set(POB_BIN_DEST ".")
+    set(POB_RES_DEST ".")
+endif()
+
+if (APPLE AND NOT POB_LUA_TREE)
+    set(POB_LUA_TREE "${CMAKE_CURRENT_SOURCE_DIR}/../PathOfBuilding"
+        CACHE PATH "Path to the PathOfBuilding main repo (Lua tree bundled into the .app)")
+endif()
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ".")
 include(InstallRequiredSystemLibraries)
@@ -268,18 +278,20 @@ target_link_libraries(SimpleGraphic
     $<IF:$<TARGET_EXISTS:zstd::libzstd_shared>,zstd::libzstd_shared,zstd::libzstd_static>
 )
 
-install(FILES $<TARGET_RUNTIME_DLLS:SimpleGraphic> DESTINATION ".")
-install(TARGETS SimpleGraphic RUNTIME DESTINATION "." LIBRARY DESTINATION ".")
+install(FILES $<TARGET_RUNTIME_DLLS:SimpleGraphic> DESTINATION "${POB_BIN_DEST}")
+install(TARGETS SimpleGraphic
+    RUNTIME DESTINATION "${POB_BIN_DEST}"
+    LIBRARY DESTINATION "${POB_BIN_DEST}"
+)
 
-# On macOS, $<TARGET_RUNTIME_DLLS:> evaluates to empty (it's effectively
-# Windows-only), so explicitly install the angle dylibs that our launcher
-# pre-dlopen()s by absolute path.
+# $<TARGET_RUNTIME_DLLS:> is effectively Windows-only, so install the
+# angle dylibs explicitly on macOS.
 if (APPLE)
     install(IMPORTED_RUNTIME_ARTIFACTS
         unofficial::angle::libEGL
         unofficial::angle::libGLESv2
-        LIBRARY DESTINATION "."
-        RUNTIME DESTINATION "."
+        LIBRARY DESTINATION "${POB_BIN_DEST}"
+        RUNTIME DESTINATION "${POB_BIN_DEST}"
     )
 endif()
 
@@ -334,8 +346,11 @@ target_link_libraries(lcurl
     LuaJIT::LuaJIT
 )
 
-install(TARGETS lcurl RUNTIME DESTINATION "." LIBRARY DESTINATION ".")
-install(FILES $<TARGET_RUNTIME_DLLS:lcurl> DESTINATION ".")
+install(TARGETS lcurl
+    RUNTIME DESTINATION "${POB_BIN_DEST}"
+    LIBRARY DESTINATION "${POB_BIN_DEST}"
+)
+install(FILES $<TARGET_RUNTIME_DLLS:lcurl> DESTINATION "${POB_BIN_DEST}")
 
 # luautf8 module
 
@@ -365,8 +380,11 @@ target_link_libraries(lua-utf8
     LuaJIT::LuaJIT
 )
 
-install(TARGETS lua-utf8 RUNTIME DESTINATION "." LIBRARY DESTINATION ".")
-install(FILES $<TARGET_RUNTIME_DLLS:lua-utf8> DESTINATION ".")
+install(TARGETS lua-utf8
+    RUNTIME DESTINATION "${POB_BIN_DEST}"
+    LIBRARY DESTINATION "${POB_BIN_DEST}"
+)
+install(FILES $<TARGET_RUNTIME_DLLS:lua-utf8> DESTINATION "${POB_BIN_DEST}")
 
 # luasocket module
 
@@ -410,8 +428,11 @@ target_link_libraries(luasocket
 )
 
 set_target_properties(luasocket PROPERTIES OUTPUT_NAME "socket" PREFIX "")
-install(TARGETS luasocket RUNTIME DESTINATION "." LIBRARY DESTINATION ".")
-install(FILES $<TARGET_RUNTIME_DLLS:luasocket> DESTINATION ".")
+install(TARGETS luasocket
+    RUNTIME DESTINATION "${POB_BIN_DEST}"
+    LIBRARY DESTINATION "${POB_BIN_DEST}"
+)
+install(FILES $<TARGET_RUNTIME_DLLS:luasocket> DESTINATION "${POB_BIN_DEST}")
 
 # lzip module
 
@@ -430,19 +451,57 @@ target_link_libraries(lzip
     ZLIB::ZLIB
 )
 
-install(TARGETS lzip RUNTIME DESTINATION "." LIBRARY DESTINATION ".")
-install(FILES $<TARGET_RUNTIME_DLLS:lzip> DESTINATION ".")
+install(TARGETS lzip
+    RUNTIME DESTINATION "${POB_BIN_DEST}"
+    LIBRARY DESTINATION "${POB_BIN_DEST}"
+)
+install(FILES $<TARGET_RUNTIME_DLLS:lzip> DESTINATION "${POB_BIN_DEST}")
 
 # Linux launcher
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_executable(PathOfBuilding linux/launcher.c)
     target_link_libraries(PathOfBuilding PRIVATE ${CMAKE_DL_LIBS})
-    install(TARGETS PathOfBuilding RUNTIME DESTINATION ".")
+    install(TARGETS PathOfBuilding RUNTIME DESTINATION "${POB_BIN_DEST}")
 endif()
 
-# macOS launcher
+# macOS launcher: built as a .app bundle with the PoB Lua tree embedded
+# in Contents/Resources so it can be launched from Finder/Spotlight/Dock.
 if (APPLE)
-    add_executable(PathOfBuilding macos/launcher.c)
+    add_executable(PathOfBuilding MACOSX_BUNDLE macos/launcher.c)
     target_link_libraries(PathOfBuilding PRIVATE ${CMAKE_DL_LIBS})
-    install(TARGETS PathOfBuilding RUNTIME DESTINATION ".")
+
+    set_target_properties(PathOfBuilding PROPERTIES
+        OUTPUT_NAME "Path of Building"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist.in"
+        MACOSX_BUNDLE_BUNDLE_NAME "Path of Building"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.pathofbuildingcommunity.PathOfBuilding"
+        MACOSX_BUNDLE_BUNDLE_VERSION "2.63.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "2.63.0"
+        MACOSX_BUNDLE_ICON_FILE "AppIcon"
+    )
+
+    install(TARGETS PathOfBuilding
+        BUNDLE DESTINATION "."
+        RUNTIME DESTINATION "${POB_BIN_DEST}"
+    )
+
+    if (EXISTS "${POB_LUA_TREE}/src/Launch.lua")
+        install(DIRECTORY "${POB_LUA_TREE}/src"
+            DESTINATION "${POB_RES_DEST}"
+            PATTERN ".git*" EXCLUDE
+            PATTERN "Update" EXCLUDE
+        )
+        install(DIRECTORY "${POB_LUA_TREE}/runtime/lua"
+            DESTINATION "${POB_RES_DEST}"
+        )
+        install(DIRECTORY "${POB_LUA_TREE}/runtime/SimpleGraphic"
+            DESTINATION "${POB_RES_DEST}"
+            PATTERN "*.cfg" EXCLUDE
+        )
+    else()
+        message(WARNING
+            "POB_LUA_TREE='${POB_LUA_TREE}' has no src/Launch.lua; the .app "
+            "will be built without an embedded Lua tree. Pass "
+            "-DPOB_LUA_TREE=/path/to/PathOfBuilding to fix.")
+    endif()
 endif()
