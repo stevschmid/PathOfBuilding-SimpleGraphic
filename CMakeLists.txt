@@ -26,18 +26,16 @@ endif()
 
 include(${PROJECT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake)
 
-# Install destinations: flat on Linux/Windows, .app bundle on macOS.
-if (APPLE)
-    set(POB_BIN_DEST "Path of Building.app/Contents/MacOS")
-    set(POB_RES_DEST "Path of Building.app/Contents/Resources")
-else()
+# Install destinations. Default to a flat layout (matches Linux/Windows
+# behaviour). When this CMakeLists is included from the PathOfBuilding-Mac
+# wrapper repo, the wrapper sets POB_BIN_DEST/POB_RES_DEST to point inside
+# the .app bundle BEFORE add_subdirectory(SimpleGraphic), and our defaults
+# are skipped.
+if (NOT DEFINED POB_BIN_DEST)
     set(POB_BIN_DEST ".")
-    set(POB_RES_DEST ".")
 endif()
-
-if (APPLE AND NOT POB_LUA_TREE)
-    set(POB_LUA_TREE "${CMAKE_CURRENT_SOURCE_DIR}/../PathOfBuilding"
-        CACHE PATH "Path to the PathOfBuilding main repo (Lua tree bundled into the .app)")
+if (NOT DEFINED POB_RES_DEST)
+    set(POB_RES_DEST ".")
 endif()
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ".")
@@ -476,59 +474,5 @@ if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     install(TARGETS PathOfBuilding RUNTIME DESTINATION "${POB_BIN_DEST}")
 endif()
 
-# macOS launcher: built as a .app bundle with the PoB Lua tree embedded
-# in Contents/Resources so it can be launched from Finder/Spotlight/Dock.
-if (APPLE)
-    set(POB_APPICON "${CMAKE_CURRENT_SOURCE_DIR}/macos/AppIcon.icns")
-    set_source_files_properties(${POB_APPICON} PROPERTIES
-        MACOSX_PACKAGE_LOCATION "Resources")
-
-    add_executable(PathOfBuilding MACOSX_BUNDLE
-        macos/launcher.c
-        ${POB_APPICON}
-    )
-    target_link_libraries(PathOfBuilding PRIVATE ${CMAKE_DL_LIBS})
-
-    set_target_properties(PathOfBuilding PROPERTIES
-        OUTPUT_NAME "Path of Building"
-        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/macos/Info.plist.in"
-        MACOSX_BUNDLE_BUNDLE_NAME "Path of Building"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.pathofbuildingcommunity.PathOfBuilding"
-        MACOSX_BUNDLE_BUNDLE_VERSION "2.63.0"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "2.63.0"
-        MACOSX_BUNDLE_ICON_FILE "AppIcon"
-    )
-
-    install(TARGETS PathOfBuilding
-        BUNDLE DESTINATION "."
-        RUNTIME DESTINATION "${POB_BIN_DEST}"
-    )
-
-    if (EXISTS "${POB_LUA_TREE}/src/Launch.lua")
-        install(DIRECTORY "${POB_LUA_TREE}/src"
-            DESTINATION "${POB_RES_DEST}"
-            PATTERN ".git*" EXCLUDE
-            PATTERN "Update" EXCLUDE
-        )
-        install(DIRECTORY "${POB_LUA_TREE}/runtime/lua"
-            DESTINATION "${POB_RES_DEST}"
-        )
-        install(DIRECTORY "${POB_LUA_TREE}/runtime/SimpleGraphic"
-            DESTINATION "${POB_RES_DEST}"
-            PATTERN "*.cfg" EXCLUDE
-        )
-        # macOS bootstrap entry: overlays src/mac_entry.lua on top of the
-        # upstream Lua tree. The launcher uses this as the entry script
-        # instead of Launch.lua so we can install the in-app updater's
-        # manifest filter before any upstream Lua code runs. The file is
-        # not in any manifest, so the updater never tracks or overwrites it.
-        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/macos/mac_entry.lua"
-            DESTINATION "${POB_RES_DEST}/src"
-        )
-    else()
-        message(WARNING
-            "POB_LUA_TREE='${POB_LUA_TREE}' has no src/Launch.lua; the .app "
-            "will be built without an embedded Lua tree. Pass "
-            "-DPOB_LUA_TREE=/path/to/PathOfBuilding to fix.")
-    endif()
-endif()
+# macOS bundle target lives in the PathOfBuilding-Mac wrapper repo.
+# This CMakeLists builds the engine + dylibs only.
