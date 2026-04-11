@@ -14,16 +14,6 @@ endif ()
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
-# macOS: overlay triplet that builds angle as a shared library so GLFW's
-# EGL backend can dlopen libEGL.dylib at runtime. Host triplet must match
-# target or vcpkg treats the build as cross-compile and luajit fails.
-if (APPLE AND NOT DEFINED CACHE{VCPKG_TARGET_TRIPLET})
-    list(APPEND VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg-triplets")
-    set(VCPKG_OVERLAY_TRIPLETS "${VCPKG_OVERLAY_TRIPLETS}" CACHE STRING "")
-    set(VCPKG_TARGET_TRIPLET "arm64-osx-pob" CACHE STRING "")
-    set(VCPKG_HOST_TRIPLET "arm64-osx-pob" CACHE STRING "")
-endif()
-
 include(${PROJECT_SOURCE_DIR}/vcpkg/scripts/buildsystems/vcpkg.cmake)
 
 # Install destinations. Default to a flat layout (matches Linux/Windows
