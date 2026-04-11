@@ -1085,6 +1085,24 @@ void r_renderer_c::Init(r_featureFlag_e features)
 	imguiCtx = ImGui::CreateContext();
 	ImGui::SetCurrentContext(imguiCtx);
 
+	// Redirect imgui.ini away from cwd/basePath. Upstream ImGui defaults
+	// to a bare "imgui.ini" that's resolved against cwd at save-time,
+	// which on macOS bundle builds lands inside the signed .app and
+	// invalidates the sealed resource manifest. The launcher sets
+	// POB_MAC_USER_DIR to a writable App Support path; fall back to
+	// sys->basePath (legacy) when the env var is not set.
+	// The std::string must outlive the ImGui context — file-static
+	// gives it program lifetime with zero header changes.
+	static std::string s_imguiIniPath;
+	{
+		std::filesystem::path iniBase = sys->basePath;
+		if (const char* d = std::getenv("POB_MAC_USER_DIR")) {
+			iniBase = d;
+		}
+		s_imguiIniPath = (iniBase / "imgui.ini").string();
+		ImGui::GetIO().IniFilename = s_imguiIniPath.c_str();
+	}
+
 	ImGui_ImplGlfw_InitForOpenGL((GLFWwindow*)sys->video->GetWindowHandle(), true);
 	ImGui_ImplOpenGL3_Init(nullptr);
 

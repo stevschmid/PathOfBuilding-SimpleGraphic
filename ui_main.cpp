@@ -6,9 +6,19 @@
 
 #include "ui_local.h"
 
+#include <cstdlib>
+#include <filesystem>
+#include <system_error>
+
 // ======
 // Locals
 // ======
+
+// Base directory for SimpleGraphic's own cfg files. Defaults to sys->basePath
+// (legacy behavior). On macOS the launcher sets POB_MAC_USER_DIR to the
+// wrapper's App Support root so these writes don't tamper with the signed
+// .app bundle. Computed in Init and reused by the Shutdown saver.
+static std::filesystem::path s_sgCfgBase;
 
 static struct {
 	int key;
@@ -239,9 +249,20 @@ void ui_main_c::Init(int argc, char** argv)
 		scriptArgv[a] = AllocString(argv[a]);
 	}
 
+	// Resolve the cfg base directory once. Legacy/Windows default is
+	// sys->basePath (relative cwd behavior). Our macOS launcher overrides
+	// via POB_MAC_USER_DIR so SG's writes never land inside the signed
+	// .app bundle.
+	s_sgCfgBase = sys->basePath;
+	if (const char* d = std::getenv("POB_MAC_USER_DIR")) {
+		s_sgCfgBase = d;
+		std::error_code ec;
+		std::filesystem::create_directories(s_sgCfgBase / "SimpleGraphic", ec);
+	}
+
 	// Load config files
-	core->config->LoadConfig("SimpleGraphic/SimpleGraphic.cfg");
-	core->config->LoadConfig("SimpleGraphic/SimpleGraphicAuto.cfg");
+	core->config->LoadConfig(s_sgCfgBase / "SimpleGraphic/SimpleGraphic.cfg");
+	core->config->LoadConfig(s_sgCfgBase / "SimpleGraphic/SimpleGraphicAuto.cfg");
 	if (core->config->LoadConfig(scriptCfg)) {
 		scriptCfg.clear();
 	}
@@ -488,7 +509,7 @@ void ui_main_c::Shutdown()
 	if (!scriptCfg.empty()) {
 		core->config->SaveConfig(scriptCfg);
 	} else {
-		core->config->SaveConfig("SimpleGraphic/SimpleGraphic.cfg");
+		core->config->SaveConfig(s_sgCfgBase / "SimpleGraphic/SimpleGraphic.cfg");
 	}
 
 	for (int a = 0; a < scriptArgc; a++) {
