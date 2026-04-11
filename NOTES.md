@@ -227,3 +227,73 @@ Two related portfile/forwarding bugs: the overlay portfile only forwards `-DVCPK
 **One subtle gotcha worth documenting**: also set `VCPKG_HOST_TRIPLET` to the same custom triplet name. Otherwise vcpkg's `host_triplet != target_triplet` check considers the build a cross-compile (even though both are native arm64-osx), and the luajit portfile's `if(VCPKG_CROSSCOMPILING)` branch fires and passes `BUILDVM_X=` to luajit's Makefile but doesn't set `HOST_CC` for `host/minilua`. The luajit Makefile then links `host/minilua` with `:` (the noop shell builtin) instead of `cc`, silently produces no binary, and the install fails further down. Setting host==target avoids this.
 
 This isn't a bug to upstream — it's the intended way to use custom triplets — but it's the kind of lore that costs an hour to rediscover, so worth a note.
+
+## In-app updater hangs on macOS — single PoB Lua bug, one-line fix
+
+This one surfaced when we tested the in-app updater end-to-end by pinning the PoB Lua submodule to v2.60.0 and letting the updater diff against current master (~220 files, including the new `TreeData/3_28*` directories). The updater sat at 100% CPU forever on what should have been a ~1-second file-copy phase.
+
+Root cause is a single bug in **PoB Lua's `UpdateCheck.lua`**. Nothing in SimpleGraphic needs to change — `l_MakeDir` is fine as a single-directory primitive, and the per-segment MakeDir loop in `UpdateCheck.lua` is the intentional workaround that leverages it on Windows. The bug is that the workaround doesn't handle POSIX absolute paths correctly.
+
+### The bug
+
+**File:** PoB Lua repo `src/UpdateCheck.lua` (in the `for _, data in pairs(updateFiles)` loop, around line 307)
+
+```lua
+local dirStr = ""
+for dir in data.fullPath:gmatch("([^/]+/)") do
+    dirStr = dirStr .. dir
+    MakeDir(dirStr)
+end
+```
+
+`data.fullPath` is built as `scriptPath .. "/" .. name`.
+
+- **On Windows**: `scriptPath` starts with a drive letter (`C:/...`), which is a non-`/` character. Lua's `[^/]+/` pattern happily captures `C:/` as the first segment, then `Program Files/`, then `Path of Building/`, etc. The accumulated `dirStr` stays **absolute** throughout. Each iteration's `MakeDir(dirStr)` creates one new directory whose parent was created in the previous iteration, so the singular `l_MakeDir` works at every step. The whole loop is effectively a Lua-side `create_directories`.
+
+- **On POSIX (Linux + macOS)**: `scriptPath` starts with `/`. Lua's `[^/]+/` requires **at least one non-`/` char** before the `/`, so the leading `/` gets **skipped** and `gmatch` starts yielding from position 2 onward: `private/`, `tmp/`, `pob-install-wrapper/`, ..., `TreeData/`, `3_28/`. The accumulated `dirStr` is `private/tmp/...` — **relative**. `MakeDir` then resolves it against `cwd` (= `scriptPath` itself, set by PoB's launcher), so the loop creates a **phantom directory tree at `Resources/src/private/tmp/.../TreeData/3_28/`** while the real absolute destination `/private/tmp/.../TreeData/3_28/` is never created.
+
+`UpdateApply.lua` then tries to copy the downloaded file to its absolute destination:
+
+```lua
+local dstFile
+while not dstFile do
+    dstFile = io.open(dst, "w+b")
+end
+```
+
+The destination parent doesn't exist, `io.open` returns nil, and the retry loop spins at 100% CPU forever. (The infinite retry is its own latent bug — `io.open` failure on a missing directory should not retry forever — but fixing the MakeDir loop means io.open never fails in the first place.)
+
+### Why it's invisible everywhere else
+
+- **Windows**: drive letter starts with a non-`/` char → `gmatch` captures the whole absolute path correctly → per-segment loop works.
+- **Linux (PR #98)**: doesn't ship a local manifest, so `Launch.lua` enters dev mode and the in-app updater never runs at all. The bug is latent.
+- **macOS**: our port is the first and only environment that ships a manifest, runs the in-app updater against a real file diff, AND uses an absolute POSIX `scriptPath`. Everything lines up to expose it.
+
+### The fix
+
+One line. Seed `dirStr` with `/` when `fullPath` is a POSIX absolute path:
+
+```lua
+local dirStr = data.fullPath:sub(1,1) == "/" and "/" or ""
+for dir in data.fullPath:gmatch("([^/]+/)") do
+    dirStr = dirStr .. dir
+    MakeDir(dirStr)
+end
+```
+
+On Windows, the first char is `C` (or whatever the drive letter is), the conditional is false, `dirStr` stays `""`, and the loop behaves byte-identically to today's code. On POSIX absolute paths, the first char is `/`, `dirStr` is seeded with `/`, and the accumulated path stays absolute through the loop. On relative paths (should never happen for `fullPath`, but harmless anyway), the first char is a non-`/`, `dirStr` stays `""`, behavior unchanged.
+
+No C++ change. No changes to SimpleGraphic. Single-file, single-line fix in PoB Lua.
+
+### How this fork handles it
+
+We can't modify PoB Lua upstream, and we don't maintain a fork of the Lua repo. Instead, the macOS bootstrap `mac_entry.lua` (in the wrapper repo) runs a `gsub` on `UpdateCheck.lua`'s source at load time — replacing the `local dirStr = ""` line with the conditional form — before handing the patched text to Lua's loader. The patch is applied at both entry points:
+
+1. **`LoadModule` wrapper** for the first-run install path (Launch.lua:37 → `LoadModule("UpdateCheck")`, runs in the main Lua state)
+2. **`LaunchSubScript` wrapper** for the regular CheckForUpdate path (Launch.lua:85 background check + 12-hour timer + Ctrl+U, runs in a fresh sub-script Lua state)
+
+`UpdateCheck.lua` on disk is never modified, so the in-app updater's integrity check still passes and upstream can continue to ship updates to this file normally. The runtime patch survives every PoB Lua update.
+
+### Upstream plan
+
+Single PR against `PathOfBuildingCommunity/PathOfBuilding`. One-line change to `src/UpdateCheck.lua`. Safe on all platforms. Fixes a latent POSIX bug that was never exercised until macOS started shipping a bundle with a manifest. Zero SimpleGraphic changes required.
