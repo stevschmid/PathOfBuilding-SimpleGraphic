@@ -494,11 +494,13 @@ static gli::texture2d_array TranscodeTexture(gli::texture2d_array src, gli::form
 	for (size_t layer = 0; layer < outLayers; ++layer) {
 		for (size_t dstLevel = 0; dstLevel < outLevels; ++dstLevel) {
 			auto* dstData = (uint8_t*)dst.data(layer, 0, dstLevel);
+			auto* dstDataStart = dstData;
 			const auto dstExtent = dst.extent(dstLevel);
 			const auto dstRowStride = dstExtent.x * 4;
 
 			const size_t srcLevel = dstLevel + firstLevel;
 			const auto* srcData = (const uint8_t*)src.data(layer, 0, srcLevel);
+			const auto* srcDataStart = srcData;
 
 			const auto srcBlockSize = gli::block_extent(srcFormat);
 			const auto srcBlocksPerRow = (dstExtent.y + srcBlockSize.y - 1) / srcBlockSize.y; // round up partial blocks
@@ -542,10 +544,10 @@ static gli::texture2d_array TranscodeTexture(gli::texture2d_array src, gli::form
 					dstData += dstRowStride * rowsLeft;
 			}
 
-			const auto* srcEnd = srcData + src.size(srcLevel);
-			const auto* dstEnd = dstData + dst.size(dstLevel);
-			assert(srcData == srcEnd);
-			assert(dstData == dstEnd);
+			assert(srcData == srcDataStart + src.size(srcLevel));
+			assert(dstData == dstDataStart + dst.size(dstLevel));
+			(void)srcDataStart;
+			(void)dstDataStart;
 		}
 	}
 
