@@ -217,7 +217,7 @@ bool find_c::FindFirst(std::filesystem::path const&& fileSpec)
 		if (GlobMatch(globPattern, candFilename)) {
 			fileName = candFilename;
 			isDirectory = iter->is_directory();
-			fileSize = iter->file_size();
+			fileSize = isDirectory ? 0 : iter->file_size();
 			auto mod = iter->last_write_time();
 			modified = mod.time_since_epoch().count();
 			return true;
@@ -237,7 +237,7 @@ bool find_c::FindNext()
 		if (GlobMatch(globPattern, candFilename)) {
 			fileName = candFilename;
 			isDirectory = iter->is_directory();
-			fileSize = iter->file_size();
+			fileSize = isDirectory ? 0 : iter->file_size();
 			auto mod = iter->last_write_time();
 			modified = mod.time_since_epoch().count();
 			return true;
