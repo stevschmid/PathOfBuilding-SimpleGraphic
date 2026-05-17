@@ -9,6 +9,7 @@
       "platform": "osx"
     },
     "curl",
+    "openssl",
     "fmt",
     "glfw3",
     "gli",
