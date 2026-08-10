@@ -60,6 +60,7 @@ set(SIMPLEGRAPHIC_SOURCES
     "engine/core/core_tex_manipulation.h"
     "engine/core/core_video.cpp"
     "engine/core/core_video.h"
+    "engine/render/r_dynfont.h"
     "engine/render/r_font.cpp"
     "engine/render/r_font.h"
     "engine/render/r_main.cpp"
@@ -92,6 +93,7 @@ set (SIMPLEGRAPHIC_PLATFORM_SOURCES)
 if (APPLE)
     list (APPEND SIMPLEGRAPHIC_PLATFORM_SOURCES
         "engine/system/win/sys_macos.mm"
+        "engine/render/r_dynfont.mm"
     )
 endif()
 
@@ -275,12 +277,20 @@ install(TARGETS SimpleGraphic
 # $<TARGET_RUNTIME_DLLS:> is effectively Windows-only, so install the
 # angle dylibs explicitly on macOS.
 if (APPLE)
-    install(IMPORTED_RUNTIME_ARTIFACTS
-        unofficial::angle::libEGL
-        unofficial::angle::libGLESv2
-        LIBRARY DESTINATION "${POB_BIN_DEST}"
-        RUNTIME DESTINATION "${POB_BIN_DEST}"
-    )
+    # IMPORTED_RUNTIME_ARTIFACTS only applies when ANGLE was built as a shared
+    # library. With a static vcpkg triplet it is linked straight into
+    # SimpleGraphic and there is nothing separate to install.
+    get_target_property(_pob_angle_type unofficial::angle::libEGL TYPE)
+    if (_pob_angle_type STREQUAL "SHARED_LIBRARY")
+        install(IMPORTED_RUNTIME_ARTIFACTS
+            unofficial::angle::libEGL
+            unofficial::angle::libGLESv2
+            LIBRARY DESTINATION "${POB_BIN_DEST}"
+            RUNTIME DESTINATION "${POB_BIN_DEST}"
+        )
+    else()
+        message(STATUS "ANGLE is static (${_pob_angle_type}); skipping runtime artifact install")
+    endif()
 endif()
 
 if (WIN32)
