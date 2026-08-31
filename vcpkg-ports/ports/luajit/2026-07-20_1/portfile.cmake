@@ -9,8 +9,8 @@ endif()
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO LuaJIT/LuaJIT
-    REF 18b087cd2cd4ddc4a79782bf155383a689d5093d  #2026-03-30 v2.1 head, includes mcode-trampoline fix (LuaJIT/LuaJIT#285)
-    SHA512 b534f5fd9fd279abef0d03748376d29418c13c92f69e714be49f966704c546febc680d803cf9e0fc089fe369f44b3dfba9fdbe48ebf1ddc880c85573353a2d6c
+    REF 2460b3ff93a1c955de3d62cfc825de7d68dc272e  #2026-07-20 v2.1 head: v3.0 syntax extensions backport (a2ce8114, compound assignment — required by PoB >= 2.67) on top of the mcode-trampoline fix (LuaJIT/LuaJIT#285). Matches upstream SimpleGraphic's 2026-07-20_1 port.
+    SHA512 f7b35a4690b5bfc847dc9f94288cc7c51b7a3bd84a793b5841889ecc7dc2d60b67b3b9f31f3e713a0c8867a719c27b129289f6d90d64dccf54595e270c6c2977
     HEAD_REF v2.1
     PATCHES
         003-do-not-set-macosx-deployment-target.patch
