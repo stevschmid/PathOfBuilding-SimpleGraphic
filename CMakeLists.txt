@@ -92,6 +92,7 @@ set (SIMPLEGRAPHIC_PLATFORM_SOURCES)
 if (APPLE)
     list (APPEND SIMPLEGRAPHIC_PLATFORM_SOURCES
         "engine/system/win/sys_macos.mm"
+        "engine/system/win/sys_platform_macos.h"
     )
 endif()
 
